@@ -86,6 +86,7 @@
       <option value="none">미연락</option><option value="absent">부재</option>
     </select>
   </div>
+  <div class="chips" id="types" hidden></div>
   <div class="chips" id="dongs" hidden></div>
   <div class="chips" id="lines" hidden></div>
   <div id="list"></div>
@@ -158,6 +159,7 @@ function fmtDate(iso, full) {
 const colLike = (re, cols = S.columns) => cols.find(c => c !== S.phoneCol && c !== S.nameCol && re.test(c));
 const placeCol = (cols) => colLike(/단지|건물|상호|업체|회사/, cols) || colLike(/주소/, cols);
 const statusCol = () => colLike(/설치|상태|진행|결과/);
+const typeCol = () => colLike(/유형|분류/);
 const dongCol = (cols = S.columns) => cols.find(c => c === '동');
 const hoCol = (cols = S.columns) => cols.find(c => c === '호수' || c === '호');
 const normPlace = s => String(s ?? '').replace(/\s|-|아파트/g, '').toLowerCase();
@@ -376,30 +378,38 @@ const resetList = () => { shown = LIST_STEP; renderList(); };
 $('#search').oninput = resetList;
 $('#place').onchange = () => { picks.dong.clear(); picks.line.clear(); $('#dongs').scrollLeft = $('#lines').scrollLeft = 0; renderChips(); resetList(); };
 
-// 동 / 호 라인 버튼 (여러 개 선택 가능, 아무것도 안 고르면 전체)
-const picks = { dong: new Set(), line: new Set() };
+// 유형 / 동 / 호 라인 버튼 (여러 개 선택 가능, 아무것도 안 고르면 전체)
+const picks = { type: new Set(), dong: new Set(), line: new Set() };
 const dongOf = c => String(c.data[dongCol()] ?? '').split(' / ')[0].trim();
-const pickVal = { dong: dongOf, line: c => String(lineOf(c) ?? '') };
-const pickLabel = { dong: '동', line: '호' };
+// 한 집에 유형이 여러 개면("65세 어르신 / 장애인") 각각에 다 포함
+const pickVals = {
+  type: c => String(c.data[typeCol()] ?? '').split(' / ').map(v => v.trim()).filter(v => /\D/.test(v)),
+  dong: c => [dongOf(c)],
+  line: c => [String(lineOf(c) ?? '')],
+};
+const pickLabel = { type: '', dong: '동', line: '호' };
+const pickAll = { type: '전체 유형', dong: '전체 동', line: '전체 호' };
+const pickOk = c => Object.keys(picks).every(k => !picks[k].size || pickVals[k](c).some(v => picks[k].has(v)));
 function chipRow(kind, list) {
   const box = $('#' + kind + 's'), cnt = new Map(), sel = picks[kind];
-  for (const c of list) { const v = pickVal[kind](c); if (v) cnt.set(v, (cnt.get(v) || 0) + 1); }
+  for (const c of list) for (const v of pickVals[kind](c)) if (v) cnt.set(v, (cnt.get(v) || 0) + 1);
   box.hidden = cnt.size < 2;
   const x = box.scrollLeft; // 누른 버튼이 화면 밖으로 밀리지 않게 스크롤 위치 유지
-  box.innerHTML = `<button class="chip ${sel.size ? '' : 'on'}" data-kind="${kind}" data-v="">전체 ${pickLabel[kind]}</button>` +
-    [...cnt].sort((a, b) => a[0].localeCompare(b[0], 'ko', { numeric: true }))
+  box.innerHTML = `<button class="chip ${sel.size ? '' : 'on'}" data-kind="${kind}" data-v="">${pickAll[kind]}</button>` +
+    [...cnt].sort((a, b) => kind === 'type' ? b[1] - a[1] : a[0].localeCompare(b[0], 'ko', { numeric: true }))
       .map(([v, n]) => `<button class="chip ${sel.has(v) ? 'on' : ''}" data-kind="${kind}" data-v="${esc(v)}">${esc(v)}${pickLabel[kind]} <small>${n}</small></button>`).join('');
   box.scrollLeft = x;
 }
 function renderChips() {
   const place = $('#place').value, pc = placeCol();
+  const inPlace = place ? S.customers.filter(c => normPlace(c.data[pc]) === place) : S.customers;
+  if (typeCol()) chipRow('type', inPlace); else $('#types').hidden = true;
   if (!place) { $('#dongs').hidden = $('#lines').hidden = true; return; }
-  const inPlace = S.customers.filter(c => normPlace(c.data[pc]) === place);
   if (dongCol()) chipRow('dong', inPlace); else $('#dongs').hidden = true;
   // 호 라인 개수는 고른 동 안에서 셈
   if (hoCol()) chipRow('line', picks.dong.size ? inPlace.filter(c => picks.dong.has(dongOf(c))) : inPlace); else $('#lines').hidden = true;
 }
-document.querySelectorAll('#dongs, #lines').forEach(box => box.onclick = e => {
+document.querySelectorAll('#types, #dongs, #lines').forEach(box => box.onclick = e => {
   const b = e.target.closest('[data-kind]'); if (!b) return;
   const sel = picks[b.dataset.kind], v = b.dataset.v;
   if (v === '') sel.clear(); else sel.has(v) ? sel.delete(v) : sel.add(v);
@@ -428,13 +438,12 @@ function renderList() {
     $('#list').innerHTML = `<div class="empty">오른쪽 위 <b>엑셀 불러오기</b>로<br>고객 명단을 넣어주세요.</div>`;
     return;
   }
-  const pc = placeCol(), sc = statusCol(), mi = memoIndex();
+  const pc = placeCol(), sc = statusCol(), tc = typeCol(), mi = memoIndex();
   const place = $('#place').value, filter = $('#filter').value;
   const q = $('#search').value.trim().toLowerCase(), qd = q.replace(/\D/g, '');
   const list = S.customers.filter(c => {
     if (place && normPlace(c.data[pc]) !== place) return false;
-    if (place && picks.dong.size && !picks.dong.has(dongOf(c))) return false;
-    if (place && picks.line.size && !picks.line.has(pickVal.line(c))) return false;
+    if (!pickOk(c)) return false;
     if (filter === 'hasPhone' && !c.phone) return false;
     if (filter === 'noPhone' && c.phone) return false;
     if (filter === 'none' && (mi.has(c.id) || (sc && c.data[sc]))) return false;
@@ -442,10 +451,10 @@ function renderList() {
     if (!q) return true;
     return (qd.length >= 3 && c.phone.includes(qd)) || Object.values(c.data).some(v => String(v).toLowerCase().includes(q));
   });
-  const picked = place ? [...[...picks.dong].map(v => v + '동'), ...[...picks.line].map(v => v + '호')].join(', ') : '';
+  const picked = Object.keys(picks).flatMap(k => [...picks[k]].map(v => v + pickLabel[k])).join(', ');
   $('#list').innerHTML = `<p class="muted">${picked ? esc(picked) + ' · ' : ''}${list.length.toLocaleString()}명${list.length > shown ? ` 중 ${shown.toLocaleString()}명 표시 · 단지 선택이나 검색으로 좁혀보세요` : ''}</p>` + list.slice(0, shown).map(c => {
     const ms = mi.get(c.id) || [], ab = ms.filter(m => m.type === '부재').length, lc = ms[0]?.date, st = sc && c.data[sc];
-    const where = [!place && pc && c.data[pc], unitOf(c)].filter(Boolean).join(' ');
+    const where = [!place && pc && c.data[pc], unitOf(c), tc && c.data[tc] && '· ' + c.data[tc]].filter(Boolean).join(' ');
     return `<div class="card cust">
       <div class="info" data-open="${esc(c.id)}">
         <div class="name">${esc(nameOf(c))}${ab ? `<span class="badge">부재 ${ab}</span>` : ''}${st ? `<span class="badge gray">${esc(st)}</span>` : ''}${lc || st ? '' : '<span class="badge gray">미연락</span>'}</div>
