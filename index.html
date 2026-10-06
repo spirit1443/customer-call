@@ -29,9 +29,10 @@
   .btn.sm { padding:6px 10px; font-size:13px; }
   .filters { display:grid; grid-template-columns:3fr 2fr; gap:6px; margin:8px 0; }
   .btn:disabled { opacity:.35; cursor:default; }
-  .chips { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 8px; }
+  .chips { display:flex; gap:6px; margin:0 0 8px; overflow-x:auto; scrollbar-width:none; }
+  .chips::-webkit-scrollbar { display:none; }
   .chips[hidden] { display:none; }
-  .chip { border:1px solid var(--line); background:#fff; border-radius:16px; padding:6px 10px; font:inherit; font-size:14px; cursor:pointer; }
+  .chip { flex:none; white-space:nowrap; border:1px solid var(--line); background:#fff; border-radius:16px; padding:6px 10px; font:inherit; font-size:14px; cursor:pointer; }
   .chip.on { background:var(--red); color:#fff; border-color:var(--red); }
   .chip small { opacity:.7; }
   .cust { display:flex; gap:8px; align-items:center; }
@@ -85,6 +86,7 @@
       <option value="none">미연락</option><option value="absent">부재</option>
     </select>
   </div>
+  <div class="chips" id="dongs" hidden></div>
   <div class="chips" id="lines" hidden></div>
   <div id="list"></div>
 </main>
@@ -372,28 +374,37 @@ $('#picker').onclick = e => { if (e.target.id === 'picker') closePicker(); };
 let shown = LIST_STEP;
 const resetList = () => { shown = LIST_STEP; renderList(); };
 $('#search').oninput = resetList;
-$('#place').onchange = () => { lines.clear(); renderLines(); resetList(); };
+$('#place').onchange = () => { picks.dong.clear(); picks.line.clear(); $('#dongs').scrollLeft = $('#lines').scrollLeft = 0; renderChips(); resetList(); };
 
-// 호 라인 버튼 (여러 개 선택 가능, 아무것도 안 고르면 전체)
-const lines = new Set();
-function renderLines() {
-  const box = $('#lines'), place = $('#place').value, pc = placeCol();
-  if (!place || !hoCol()) { box.hidden = true; return; }
-  const cnt = new Map();
-  for (const c of S.customers) {
-    if (normPlace(c.data[pc]) !== place) continue;
-    const l = lineOf(c); if (l != null) cnt.set(l, (cnt.get(l) || 0) + 1);
-  }
+// 동 / 호 라인 버튼 (여러 개 선택 가능, 아무것도 안 고르면 전체)
+const picks = { dong: new Set(), line: new Set() };
+const dongOf = c => String(c.data[dongCol()] ?? '').split(' / ')[0].trim();
+const pickVal = { dong: dongOf, line: c => String(lineOf(c) ?? '') };
+const pickLabel = { dong: '동', line: '호' };
+function chipRow(kind, list) {
+  const box = $('#' + kind + 's'), cnt = new Map(), sel = picks[kind];
+  for (const c of list) { const v = pickVal[kind](c); if (v) cnt.set(v, (cnt.get(v) || 0) + 1); }
   box.hidden = cnt.size < 2;
-  box.innerHTML = `<button class="chip ${lines.size ? '' : 'on'}" data-line="">전체 호</button>` +
-    [...cnt].sort((a, b) => a[0] - b[0]).map(([l, n]) => `<button class="chip ${lines.has(l) ? 'on' : ''}" data-line="${l}">${l}호 <small>${n}</small></button>`).join('');
+  const x = box.scrollLeft; // 누른 버튼이 화면 밖으로 밀리지 않게 스크롤 위치 유지
+  box.innerHTML = `<button class="chip ${sel.size ? '' : 'on'}" data-kind="${kind}" data-v="">전체 ${pickLabel[kind]}</button>` +
+    [...cnt].sort((a, b) => a[0].localeCompare(b[0], 'ko', { numeric: true }))
+      .map(([v, n]) => `<button class="chip ${sel.has(v) ? 'on' : ''}" data-kind="${kind}" data-v="${esc(v)}">${esc(v)}${pickLabel[kind]} <small>${n}</small></button>`).join('');
+  box.scrollLeft = x;
 }
-$('#lines').onclick = e => {
-  const b = e.target.closest('[data-line]'); if (!b) return;
-  if (b.dataset.line === '') lines.clear();
-  else { const l = +b.dataset.line; lines.has(l) ? lines.delete(l) : lines.add(l); }
-  renderLines(); resetList();
-};
+function renderChips() {
+  const place = $('#place').value, pc = placeCol();
+  if (!place) { $('#dongs').hidden = $('#lines').hidden = true; return; }
+  const inPlace = S.customers.filter(c => normPlace(c.data[pc]) === place);
+  if (dongCol()) chipRow('dong', inPlace); else $('#dongs').hidden = true;
+  // 호 라인 개수는 고른 동 안에서 셈
+  if (hoCol()) chipRow('line', picks.dong.size ? inPlace.filter(c => picks.dong.has(dongOf(c))) : inPlace); else $('#lines').hidden = true;
+}
+document.querySelectorAll('#dongs, #lines').forEach(box => box.onclick = e => {
+  const b = e.target.closest('[data-kind]'); if (!b) return;
+  const sel = picks[b.dataset.kind], v = b.dataset.v;
+  if (v === '') sel.clear(); else sel.has(v) ? sel.delete(v) : sel.add(v);
+  renderChips(); resetList();
+});
 $('#filter').onchange = resetList;
 
 // 단지 선택 목록: 표기만 다른 단지(띄어쓰기·"아파트" 유무)는 하나로 묶음
@@ -422,7 +433,8 @@ function renderList() {
   const q = $('#search').value.trim().toLowerCase(), qd = q.replace(/\D/g, '');
   const list = S.customers.filter(c => {
     if (place && normPlace(c.data[pc]) !== place) return false;
-    if (place && lines.size && !lines.has(lineOf(c))) return false;
+    if (place && picks.dong.size && !picks.dong.has(dongOf(c))) return false;
+    if (place && picks.line.size && !picks.line.has(pickVal.line(c))) return false;
     if (filter === 'hasPhone' && !c.phone) return false;
     if (filter === 'noPhone' && c.phone) return false;
     if (filter === 'none' && (mi.has(c.id) || (sc && c.data[sc]))) return false;
@@ -430,7 +442,8 @@ function renderList() {
     if (!q) return true;
     return (qd.length >= 3 && c.phone.includes(qd)) || Object.values(c.data).some(v => String(v).toLowerCase().includes(q));
   });
-  $('#list').innerHTML = `<p class="muted">${list.length.toLocaleString()}명${list.length > shown ? ` 중 ${shown.toLocaleString()}명 표시 · 단지 선택이나 검색으로 좁혀보세요` : ''}</p>` + list.slice(0, shown).map(c => {
+  const picked = place ? [...[...picks.dong].map(v => v + '동'), ...[...picks.line].map(v => v + '호')].join(', ') : '';
+  $('#list').innerHTML = `<p class="muted">${picked ? esc(picked) + ' · ' : ''}${list.length.toLocaleString()}명${list.length > shown ? ` 중 ${shown.toLocaleString()}명 표시 · 단지 선택이나 검색으로 좁혀보세요` : ''}</p>` + list.slice(0, shown).map(c => {
     const ms = mi.get(c.id) || [], ab = ms.filter(m => m.type === '부재').length, lc = ms[0]?.date, st = sc && c.data[sc];
     const where = [!place && pc && c.data[pc], unitOf(c)].filter(Boolean).join(' ');
     return `<div class="card cust">
@@ -524,7 +537,7 @@ function renderDetail() {
 }
 
 function refresh() { if (current) renderDetail(); renderList(); }
-function render() { renderTemplates(); renderPlaces(); renderLines(); renderList(); }
+function render() { renderTemplates(); renderPlaces(); renderChips(); renderList(); }
 load().then(render).catch(e => alert('데이터를 불러오지 못했어요: ' + e));
 </script>
 </body>
