@@ -42,6 +42,8 @@
   .icon { width:44px; height:44px; border-radius:50%; font-size:20px; padding:0; }
   .badge { display:inline-block; font-size:12px; padding:2px 6px; border-radius:10px; background:#fdecea; color:var(--red); margin-left:4px; }
   .badge.gray { background:#eee; color:var(--sub); }
+  .badge.blue { background:#e8f0fe; color:#1a56db; }
+  .field { margin-bottom:8px; } .field:last-child { margin-bottom:0; }
   #detail, #picker { position:fixed; inset:0; background:var(--bg); z-index:10; overflow-y:auto; display:none; }
   #picker { background:rgba(0,0,0,.4); z-index:20; }
   #picker .sheet { position:absolute; bottom:0; left:0; right:0; max-height:80%; overflow-y:auto; background:#fff; border-radius:16px 16px 0 0; padding:16px; }
@@ -62,6 +64,7 @@
   <h1>고객 연락</h1>
   <label>엑셀 불러오기<input type="file" id="file" hidden></label>
   <button id="exportBtn">내보내기</button>
+  <button id="addBtn" aria-label="고객 추가">＋</button>
 </header>
 
 <main>
@@ -84,6 +87,7 @@
     <select id="filter">
       <option value="all">전체</option><option value="hasPhone">번호 있음</option><option value="noPhone">번호 없음</option>
       <option value="none">미연락</option><option value="absent">부재</option>
+      <option value="대상자">대상자</option><option value="신청자">신청자</option><option value="unclassified">미분류</option>
     </select>
   </div>
   <div class="chips" id="types" hidden></div>
@@ -96,7 +100,7 @@
 <section id="picker"><div class="sheet" id="pickerSheet"></div></section>
 
 <script>
-const EXTRA_COLS = ['방문가능시간', '부재횟수', '최근연락일'];
+const EXTRA_COLS = ['분류', '방문가능시간', '부재횟수', '최근연락일', '고객키'];
 const LIST_STEP = 200;
 const DEFAULT_TEMPLATES = [
   { title: '점검 일정 안내', body: '안녕하세요 {이름}님, 소방시설 정기점검 일정 안내차 연락드립니다.\n편하신 방문 가능 날짜와 시간을 알려주시면 맞춰서 방문드리겠습니다.\n감사합니다.' },
@@ -233,7 +237,7 @@ async function importWorkbook(wb) {
     const data = {};
     cols.forEach(c => data[c] = r[c]);
     if (phone) data[phoneCol] = phone;
-    const id = keyOf(data, phone, cols);
+    const id = r['고객키'] || keyOf(data, phone, cols); // 내보낸 파일이면 저장된 키 그대로
     if (!id) { skipped++; return; }
     const prev = seen.get(id);
     if (prev) {
@@ -245,12 +249,14 @@ async function importWorkbook(wb) {
     }
     const ex = byId.get(id);
     if (ex) {
-      cols.forEach(k => { if (data[k] !== '') ex.data[k] = data[k]; }); // 빈칸은 앱에서 입력한 값을 지우지 않음
-      if (phone) ex.phone = phone;
-      if (r['방문가능시간']) ex.visitTime = r['방문가능시간'];
+      // 앱에서 입력·수정한 값이 우선: 앱 쪽이 비어 있는 칸만 엑셀 값으로 채움
+      cols.forEach(k => { if ((ex.data[k] ?? '') === '' && data[k] !== '') ex.data[k] = data[k]; });
+      if (!ex.phone && phone) ex.phone = phone;
+      if (!ex.visitTime && r['방문가능시간']) ex.visitTime = r['방문가능시간'];
+      if (!ex.cls && r['분류']) ex.cls = r['분류'];
       seen.set(id, ex); updated++;
     } else {
-      const c = { id, phone, data, visitTime: r['방문가능시간'] || '' };
+      const c = { id, phone, data, visitTime: r['방문가능시간'] || '', cls: r['분류'] || '' };
       S.customers.push(c); byId.set(id, c); seen.set(id, c); added++;
     }
   });
@@ -300,10 +306,12 @@ $('#exportBtn').onclick = () => {
   const cust = S.customers.map(c => {
     const o = {};
     S.columns.forEach(k => o[k] = c.data[k] ?? '');
+    o['분류'] = c.cls || '';
     o['방문가능시간'] = c.visitTime || '';
     const ms = mi.get(c.id) || [];
     o['부재횟수'] = ms.filter(m => m.type === '부재').length || '';
     o['최근연락일'] = ms[0] ? fmtDate(ms[0].date, true) : '';
+    o['고객키'] = c.id; // 다시 불러올 때 같은 고객으로 맞추는 용도
     return o;
   });
   const memos = S.memos.slice().sort((a, b) => a.date.localeCompare(b.date)).map(m => {
@@ -447,6 +455,8 @@ function renderList() {
     if (filter === 'hasPhone' && !c.phone) return false;
     if (filter === 'noPhone' && c.phone) return false;
     if (filter === 'none' && (mi.has(c.id) || (sc && c.data[sc]))) return false;
+    if ((filter === '대상자' || filter === '신청자') && c.cls !== filter) return false;
+    if (filter === 'unclassified' && c.cls) return false;
     if (filter === 'absent' && !((mi.get(c.id) || []).some(m => m.type === '부재') || (sc && String(c.data[sc]).includes('부재')))) return false;
     if (!q) return true;
     return (qd.length >= 3 && c.phone.includes(qd)) || Object.values(c.data).some(v => String(v).toLowerCase().includes(q));
@@ -457,7 +467,7 @@ function renderList() {
     const where = [!place && pc && c.data[pc], unitOf(c), tc && c.data[tc] && '· ' + c.data[tc]].filter(Boolean).join(' ');
     return `<div class="card cust">
       <div class="info" data-open="${esc(c.id)}">
-        <div class="name">${esc(nameOf(c))}${ab ? `<span class="badge">부재 ${ab}</span>` : ''}${st ? `<span class="badge gray">${esc(st)}</span>` : ''}${lc || st ? '' : '<span class="badge gray">미연락</span>'}</div>
+        <div class="name">${esc(nameOf(c))}${c.cls ? `<span class="badge ${c.cls === '신청자' ? '' : 'blue'}">${esc(c.cls)}</span>` : ''}${ab ? `<span class="badge">부재 ${ab}</span>` : ''}${st ? `<span class="badge gray">${esc(st)}</span>` : ''}${lc || st ? '' : '<span class="badge gray">미연락</span>'}</div>
         <div class="meta">${c.phone ? fmtPhone(c.phone) : '번호 없음'}${where ? ' · ' + esc(where) : ''}</div>
         ${c.visitTime || lc ? `<div class="meta">${c.visitTime ? '🕑 ' + esc(c.visitTime) : ''}${c.visitTime && lc ? ' · ' : ''}${lc ? '최근 ' + fmtDate(lc) : ''}</div>` : ''}
       </div>
@@ -477,7 +487,7 @@ $('#list').onclick = e => {
 // ---------- 고객 상세 ----------
 let current = null;
 function openDetail(id) { current = id; renderDetail(); $('#detail').style.display = 'block'; $('#detail').scrollTop = 0; history.pushState({ d: 1 }, ''); }
-function closeDetail() { current = null; $('#detail').style.display = 'none'; renderList(); }
+function closeDetail() { current = null; $('#detail').style.display = 'none'; renderPlaces(); renderChips(); renderList(); }
 window.onpopstate = () => { if ($('#picker').style.display === 'block') closePicker(); if (current) closeDetail(); };
 
 function renderDetail() {
@@ -486,6 +496,13 @@ function renderDetail() {
   $('#detail').innerHTML = `
     <header><button id="back">←</button><h1>${esc(nameOf(c))}</h1></header>
     <main>
+      <div class="card">
+        <label class="muted">이름</label>
+        <input id="dName" value="${esc(c.data[S.nameCol])}" placeholder="이름 입력">
+        <div class="row" style="margin-top:8px">
+          ${['대상자', '신청자'].map(v => `<button class="chip ${c.cls === v ? 'on' : ''}" data-cls="${v}" style="flex:1">${v}</button>`).join('')}
+        </div>
+      </div>
       <div class="actions" style="margin-bottom:10px">
         <button class="btn primary" id="dCall" ${c.phone ? '' : 'disabled'}>📞 전화</button>
         <button class="btn primary" id="dSms" ${c.phone ? '' : 'disabled'}>💬 문자</button>
@@ -504,10 +521,14 @@ function renderDetail() {
         <input id="dStatus" value="${esc(c.data[sc])}" list="statusOpts" placeholder="예: 3개 완료, 다음에 연락">
         <datalist id="statusOpts">${[...new Set(S.customers.map(x => x.data[sc]).filter(Boolean))].slice(0, 50).map(v => `<option value="${esc(v)}">`).join('')}</datalist>
       </div>` : ''}
-      <div class="card"><dl class="kv">
-        ${officeOf(c) ? `<dt>관리사무실</dt><dd><a href="tel:${officeOf(c)}">📞 ${fmtPhone(officeOf(c))}</a></dd>` : ''}
-        ${S.columns.filter(k => k !== S.phoneCol && k !== sc && c.data[k] !== '' && c.data[k] != null).map(k => `<dt>${esc(k)}</dt><dd>${esc(c.data[k])}</dd>`).join('')}
-      </dl></div>
+      <div class="card">
+        ${officeOf(c) ? `<div class="field">관리사무실 <a href="tel:${officeOf(c)}">📞 ${fmtPhone(officeOf(c))}</a></div>` : ''}
+        ${S.columns.filter(k => k !== S.phoneCol && k !== sc && k !== S.nameCol).map(k => `<div class="field">
+          <label class="muted">${esc(k)}</label>
+          <input data-col="${esc(k)}" value="${esc(c.data[k])}" ${k === placeCol() || k === typeCol() ? `list="opts-${esc(k)}"` : ''}>
+        </div>`).join('')}
+        ${[placeCol(), typeCol()].filter(Boolean).map(k => `<datalist id="opts-${esc(k)}">${[...new Set(S.customers.map(x => String(x.data[k] ?? '').split(' / ')[0].trim()).filter(Boolean))].map(v => `<option value="${esc(v)}">`).join('')}</datalist>`).join('')}
+      </div>
       <div class="card">
         <div class="row">
           <select id="mType" style="width:100px"><option>전화</option><option>문자</option><option>방문</option><option>부재</option><option>기타</option></select>
@@ -522,6 +543,7 @@ function renderDetail() {
           <span class="when">${fmtDate(m.date, true)}</span> <span class="badge ${m.type === '부재' ? '' : 'gray'}">${esc(m.type)}</span>
           <div style="white-space:pre-wrap;margin-top:2px">${esc(m.text)}</div></div>`).join('') : '<p class="muted">아직 기록이 없어요.</p>'}
       </div>
+      <button class="btn" id="dDelete" style="width:100%;color:var(--red)">이 고객 삭제</button>
     </main>`;
   $('#back').onclick = () => history.back();
   $('#dCall').onclick = () => call(c.id);
@@ -531,6 +553,14 @@ function renderDetail() {
     const raw = e.target.value.trim(), p = normPhone(raw);
     if (raw && !p) { alert('전화번호를 다시 확인해주세요.'); e.target.value = c.phone ? fmtPhone(c.phone) : ''; return; }
     c.phone = p; c.data[S.phoneCol] = p; save(true); renderDetail();
+  };
+  $('#dName').onchange = e => { c.data[S.nameCol] = e.target.value.trim(); save(true); $('#detail h1').textContent = nameOf(c); };
+  $('#detail').querySelectorAll('[data-cls]').forEach(b => b.onclick = () => { c.cls = c.cls === b.dataset.cls ? '' : b.dataset.cls; save(true); renderDetail(); });
+  $('#detail').querySelectorAll('[data-col]').forEach(i => i.onchange = () => { c.data[i.dataset.col] = i.value.trim(); save(true); });
+  $('#dDelete').onclick = () => {
+    if (!confirm(`${nameOf(c)} 고객과 소통 기록을 모두 삭제할까요?`)) return;
+    S.customers = S.customers.filter(x => x !== c); byId.delete(c.id); S.memos = S.memos.filter(m => m.cid !== c.id);
+    save(true); history.back();
   };
   $('#dVisit').onchange = e => { c.visitTime = e.target.value.trim(); save(true); };
   if ($('#dStatus')) $('#dStatus').onchange = e => { c.data[sc] = e.target.value.trim(); save(true); };
@@ -544,6 +574,17 @@ function renderDetail() {
     S.memos = S.memos.filter(m => m.id !== b.dataset.mdel); save(); renderDetail();
   });
 }
+
+// 엑셀에 없는 사람 직접 추가 (고른 단지가 있으면 미리 채움)
+$('#addBtn').onclick = () => {
+  if (!S.columns.length) Object.assign(S, { columns: ['성명', '연락처', '단지명', '동', '호수'], nameCol: '성명', phoneCol: '연락처' });
+  const data = Object.fromEntries(S.columns.map(k => [k, '']));
+  const place = $('#place').value, pc = placeCol();
+  if (place && pc) data[pc] = S.customers.find(x => normPlace(x.data[pc]) === place)?.data[pc] || '';
+  const c = { id: 'a:' + Date.now().toString(36), phone: '', data, visitTime: '', cls: '' };
+  S.customers.unshift(c); byId.set(c.id, c); save(true);
+  openDetail(c.id); $('#dName').focus();
+};
 
 function refresh() { if (current) renderDetail(); renderList(); }
 function render() { renderTemplates(); renderPlaces(); renderChips(); renderList(); }
