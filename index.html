@@ -29,6 +29,11 @@
   .btn.sm { padding:6px 10px; font-size:13px; }
   .filters { display:grid; grid-template-columns:3fr 2fr; gap:6px; margin:8px 0; }
   .btn:disabled { opacity:.35; cursor:default; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 8px; }
+  .chips[hidden] { display:none; }
+  .chip { border:1px solid var(--line); background:#fff; border-radius:16px; padding:6px 10px; font:inherit; font-size:14px; cursor:pointer; }
+  .chip.on { background:var(--red); color:#fff; border-color:var(--red); }
+  .chip small { opacity:.7; }
   .cust { display:flex; gap:8px; align-items:center; }
   .cust .info { flex:1; min-width:0; cursor:pointer; }
   .cust .name { font-weight:600; }
@@ -80,6 +85,7 @@
       <option value="none">미연락</option><option value="absent">부재</option>
     </select>
   </div>
+  <div class="chips" id="lines" hidden></div>
   <div id="list"></div>
 </main>
 
@@ -154,6 +160,11 @@ const dongCol = (cols = S.columns) => cols.find(c => c === '동');
 const hoCol = (cols = S.columns) => cols.find(c => c === '호수' || c === '호');
 const normPlace = s => String(s ?? '').replace(/\s|-|아파트/g, '').toLowerCase();
 const officeOf = c => { const p = placeCol(); return p ? S.offices[normPlace(c.data[p])] : ''; };
+// 호 라인: 2602호 → 2호, 104호 → 4호 (끝 두 자리)
+function lineOf(c) {
+  const h = String(c.data[hoCol()] ?? '').split(' / ')[0].replace(/\D/g, '');
+  return h ? (h.length >= 3 ? +h.slice(-2) : +h) : null;
+}
 const unitOf = c => [c.data['동'] && c.data['동'] + '동', c.data[hoCol()] && c.data[hoCol()] + '호'].filter(Boolean).join(' ');
 const nameOf = c => (S.nameCol && c.data[S.nameCol]) || (c.phone && fmtPhone(c.phone)) || unitOf(c) || '(이름 없음)';
 const findCust = id => byId.get(id);
@@ -361,7 +372,28 @@ $('#picker').onclick = e => { if (e.target.id === 'picker') closePicker(); };
 let shown = LIST_STEP;
 const resetList = () => { shown = LIST_STEP; renderList(); };
 $('#search').oninput = resetList;
-$('#place').onchange = resetList;
+$('#place').onchange = () => { lines.clear(); renderLines(); resetList(); };
+
+// 호 라인 버튼 (여러 개 선택 가능, 아무것도 안 고르면 전체)
+const lines = new Set();
+function renderLines() {
+  const box = $('#lines'), place = $('#place').value, pc = placeCol();
+  if (!place || !hoCol()) { box.hidden = true; return; }
+  const cnt = new Map();
+  for (const c of S.customers) {
+    if (normPlace(c.data[pc]) !== place) continue;
+    const l = lineOf(c); if (l != null) cnt.set(l, (cnt.get(l) || 0) + 1);
+  }
+  box.hidden = cnt.size < 2;
+  box.innerHTML = `<button class="chip ${lines.size ? '' : 'on'}" data-line="">전체 호</button>` +
+    [...cnt].sort((a, b) => a[0] - b[0]).map(([l, n]) => `<button class="chip ${lines.has(l) ? 'on' : ''}" data-line="${l}">${l}호 <small>${n}</small></button>`).join('');
+}
+$('#lines').onclick = e => {
+  const b = e.target.closest('[data-line]'); if (!b) return;
+  if (b.dataset.line === '') lines.clear();
+  else { const l = +b.dataset.line; lines.has(l) ? lines.delete(l) : lines.add(l); }
+  renderLines(); resetList();
+};
 $('#filter').onchange = resetList;
 
 // 단지 선택 목록: 표기만 다른 단지(띄어쓰기·"아파트" 유무)는 하나로 묶음
@@ -390,6 +422,7 @@ function renderList() {
   const q = $('#search').value.trim().toLowerCase(), qd = q.replace(/\D/g, '');
   const list = S.customers.filter(c => {
     if (place && normPlace(c.data[pc]) !== place) return false;
+    if (place && lines.size && !lines.has(lineOf(c))) return false;
     if (filter === 'hasPhone' && !c.phone) return false;
     if (filter === 'noPhone' && c.phone) return false;
     if (filter === 'none' && (mi.has(c.id) || (sc && c.data[sc]))) return false;
@@ -491,7 +524,7 @@ function renderDetail() {
 }
 
 function refresh() { if (current) renderDetail(); renderList(); }
-function render() { renderTemplates(); renderPlaces(); renderList(); }
+function render() { renderTemplates(); renderPlaces(); renderLines(); renderList(); }
 load().then(render).catch(e => alert('데이터를 불러오지 못했어요: ' + e));
 </script>
 </body>
